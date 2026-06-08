@@ -8,7 +8,7 @@ import { DRACOLoader } from "three-stdlib";
 import { useSensors } from "@/components/providers/sensor-provider";
 import { STATUS_CFG, type Sensor } from "@/lib/sensors/sensor-types";
 
-const MODEL_PATH = "/models/aat_3101_frame_test1.glb";
+const MODEL_PATH = "/models/aat_c&e_framemodel3b.glb";
 const CAMERA_CONFIG = { position: [4, 2.2, 5] as [number, number, number], fov: 34 };
 
 function Model({
@@ -115,7 +115,7 @@ function SensorHotspot({
             <p className="font-semibold leading-tight text-white">{sensor.name}</p>
             <p className="mt-0.5 text-[0.58rem]" style={{ color: cfg.color }}>
               {cfg.label}
-              {sensor.status !== "idle" && sensor.status !== "error" && (
+              {sensor.status !== "idle" && (
                 <> · {sensor.value} {sensor.unit}</>
               )}
             </p>
@@ -198,7 +198,7 @@ export function GlbViewer() {
         </div>
       )}
       <div className="pointer-events-none absolute inset-x-5 bottom-5 rounded-3xl border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 backdrop-blur-md">
-        <p className="font-medium text-white">AAT_3101_FRAME_TEST1</p>
+        <p className="font-medium text-white">AAT_C&E_FRAMEMODEL3B</p>
         <p className="mt-1 text-white/60">
           {isPlacingSensor
             ? "Modo alta activo · cada click sobre el modelo crea un sensor"

@@ -6,11 +6,13 @@ import { STATUS_CFG } from "@/lib/sensors/sensor-types";
 export function SensorPanel() {
   const {
     sensors,
+    telemetryPaths,
     selectedId,
     isPlacingSensor,
     select,
     startPlacingSensor,
     cancelPlacingSensor,
+    updateSensorAttributePath,
     removeSensor,
     updateSensorPosition,
   } = useSensors();
@@ -135,6 +137,14 @@ export function SensorPanel() {
                     />
                   </div>
 
+                  <div className="mt-3">
+                    <AttributeInput
+                      value={sensor.attributePath}
+                      options={telemetryPaths}
+                      onChange={(nextValue) => updateSensorAttributePath(sensor.id, nextValue)}
+                    />
+                  </div>
+
                   <div className="mt-3 flex justify-end">
                     <button
                       type="button"
@@ -211,6 +221,36 @@ function AxisInput({
         onClick={(event) => event.stopPropagation()}
         className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold tabular-nums text-slate-700 outline-none"
       />
+    </label>
+  );
+}
+
+function AttributeInput({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+      <span className="font-semibold tracking-[0.18em] text-slate-400">ATRIBUTO DYNAMODB</span>
+      <input
+        type="text"
+        value={value}
+        list="telemetry-attribute-paths"
+        onChange={(event) => onChange(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        placeholder="sensorValue o payload.rssi"
+        className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold text-slate-700 outline-none"
+      />
+      <datalist id="telemetry-attribute-paths">
+        {options.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
     </label>
   );
 }

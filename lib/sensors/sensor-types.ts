@@ -2,6 +2,8 @@ export type SensorStatus = "active" | "idle" | "warning" | "error";
 
 export type Sensor = {
   id: string;
+  deviceId: string;
+  attributePath: string;
   name: string;
   zone: string;
   unit: string;
