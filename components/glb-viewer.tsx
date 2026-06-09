@@ -8,7 +8,7 @@ import { DRACOLoader } from "three-stdlib";
 import { useSensors } from "@/components/providers/sensor-provider";
 import { STATUS_CFG, type Sensor } from "@/lib/sensors/sensor-types";
 
-const MODEL_PATH = "/models/aat_c&e_framemodel3b.glb";
+const MODEL_PATH = "/models/aat_c&e_framemodel3b1.glb";
 const CAMERA_CONFIG = { position: [4, 2.2, 5] as [number, number, number], fov: 34 };
 
 function Model({
@@ -183,12 +183,13 @@ export function GlbViewer() {
         <OrbitControls
           makeDefault
           enabled={!isPlacingSensor}
-          enablePan={false}
+          enablePan
           enableDamping
           dampingFactor={0.08}
-          minDistance={2.5}
-          maxDistance={10}
-          maxPolarAngle={Math.PI / 1.75}
+          minDistance={1.25}
+          maxDistance={18}
+          minPolarAngle={0}
+          maxPolarAngle={Math.PI}
           autoRotate={false}
         />
       </Canvas>
@@ -198,7 +199,7 @@ export function GlbViewer() {
         </div>
       )}
       <div className="pointer-events-none absolute inset-x-5 bottom-5 rounded-3xl border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 backdrop-blur-md">
-        <p className="font-medium text-white">AAT_C&E_FRAMEMODEL3B</p>
+        <p className="font-medium text-white">AAT_C&E_FRAMEMODEL3B1</p>
         <p className="mt-1 text-white/60">
           {isPlacingSensor
             ? "Modo alta activo · cada click sobre el modelo crea un sensor"

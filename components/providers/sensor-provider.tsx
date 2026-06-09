@@ -10,6 +10,7 @@ type SensorTelemetry = {
   timestamp?: unknown;
   msgTimestamp?: unknown;
   updatedAt?: unknown;
+  channels?: Array<Record<string, unknown>>;
   payload?: Record<string, unknown>;
 };
 
@@ -40,12 +41,50 @@ function collectPaths(
     const path = prefix ? `${prefix}.${key}` : key;
     results.add(path);
 
-    if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => {
+        const arrayPath = `${path}.${index}`;
+        results.add(arrayPath);
+
+        if (item && typeof item === "object") {
+          collectPaths(item as Record<string, unknown>, arrayPath, results);
+        }
+      });
+      continue;
+    }
+
+    if (value && typeof value === "object") {
       collectPaths(value as Record<string, unknown>, path, results);
     }
   }
 
   return [...results].sort((left, right) => left.localeCompare(right));
+}
+
+function getChannelArray(data: SensorTelemetry): Array<Record<string, unknown>> {
+  if (Array.isArray(data.channels)) return data.channels;
+
+  const payloadChannels = data.payload?.channels;
+  if (Array.isArray(payloadChannels)) return payloadChannels as Array<Record<string, unknown>>;
+
+  return [];
+}
+
+function getChannelAttributePaths(data: SensorTelemetry): string[] {
+  const channels = getChannelArray(data);
+  if (channels.length === 0) return [];
+
+  return channels.map((channel, index) => {
+    if (channel && typeof channel === "object" && "deformation" in channel) {
+      return `channels.${index}.deformation`;
+    }
+
+    if (channel && typeof channel === "object" && "rawDelta" in channel) {
+      return `channels.${index}.rawDelta`;
+    }
+
+    return `channels.${index}.deformation`;
+  });
 }
 
 function toNumber(value: unknown): number {
@@ -85,10 +124,23 @@ function pickNextAttributePath(sensors: Sensor[], telemetryPaths: string[]): str
   return telemetryPaths[0] ?? "sensorValue";
 }
 
-function pickNextDeviceId(sensors: Sensor[], availableDeviceIds: string[]): string | null {
-  const usedDeviceIds = new Set(sensors.map((sensor) => sensor.deviceId).filter(Boolean));
-  const availableIds = availableDeviceIds.filter((deviceId) => !usedDeviceIds.has(deviceId));
-  if (availableIds.length > 0) return availableIds[0];
+function pickNextDeviceId(
+  sensors: Sensor[],
+  deviceChannelPaths: Record<string, string[]>,
+): string | null {
+  const sensorCounts = new Map<string, number>();
+
+  for (const sensor of sensors) {
+    sensorCounts.set(sensor.deviceId, (sensorCounts.get(sensor.deviceId) ?? 0) + 1);
+  }
+
+  const availableIds = Object.keys(deviceChannelPaths).sort((left, right) => left.localeCompare(right));
+
+  for (const deviceId of availableIds) {
+    const capacity = Math.max(deviceChannelPaths[deviceId]?.length ?? 0, 1);
+    if ((sensorCounts.get(deviceId) ?? 0) < capacity) return deviceId;
+  }
+
   return null;
 }
 
@@ -111,7 +163,9 @@ const SensorContext = createContext<SensorCtx | null>(null);
 export function SensorProvider({ children }: { children: ReactNode }) {
   const [sensors, setSensors] = useState<Sensor[]>(INITIAL_SENSORS);
   const [telemetryPaths, setTelemetryPaths] = useState<string[]>(["sensorValue"]);
-  const [availableDeviceIds, setAvailableDeviceIds] = useState<string[]>([DEFAULT_DEVICE_ID]);
+  const [deviceChannelPaths, setDeviceChannelPaths] = useState<Record<string, string[]>>({
+    [DEFAULT_DEVICE_ID]: ["channels.0.deformation"],
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isPlacingSensor, setIsPlacingSensor] = useState(false);
 
@@ -131,6 +185,7 @@ export function SensorProvider({ children }: { children: ReactNode }) {
             : [payload as SensorTelemetry];
 
         const latestByDeviceId = new Map<string, SensorTelemetry>();
+        const channelPathsByDeviceId: Record<string, string[]> = {};
         const pathSet = new Set<string>();
 
         for (const item of telemetryItems) {
@@ -142,13 +197,37 @@ export function SensorProvider({ children }: { children: ReactNode }) {
 
           if (typeof item.deviceId === "string" && item.deviceId.trim().length > 0) {
             latestByDeviceId.set(item.deviceId, item);
+            const channelPaths = getChannelAttributePaths(item);
+            channelPathsByDeviceId[item.deviceId] = channelPaths.length > 0 ? channelPaths : ["sensorValue"];
+          }
+        }
+
+        for (const item of telemetryItems) {
+          const payload = item?.payload;
+          const payloadDeviceId =
+            payload && typeof payload === "object" && typeof payload.deviceId === "string"
+              ? payload.deviceId
+              : null;
+
+          if (!payloadDeviceId || payloadDeviceId.trim().length === 0) continue;
+
+          const channelPaths = getChannelAttributePaths({
+            ...(item as SensorTelemetry),
+            deviceId: payloadDeviceId,
+            channels: Array.isArray(payload.channels) ? (payload.channels as Array<Record<string, unknown>>) : undefined,
+          });
+
+          if (channelPaths.length > 0) {
+            channelPathsByDeviceId[payloadDeviceId] = channelPaths;
           }
         }
 
         setTelemetryPaths(pathSet.size > 0 ? [...pathSet].sort((a, b) => a.localeCompare(b)) : ["sensorValue"]);
-
-        const knownDeviceIds = [...latestByDeviceId.keys()].sort((a, b) => a.localeCompare(b));
-        setAvailableDeviceIds(knownDeviceIds.length > 0 ? knownDeviceIds : [DEFAULT_DEVICE_ID]);
+        setDeviceChannelPaths(
+          Object.keys(channelPathsByDeviceId).length > 0
+            ? channelPathsByDeviceId
+            : { [DEFAULT_DEVICE_ID]: ["channels.0.deformation"] },
+        );
 
         setSensors((prev) => {
           return prev.map((sensor) => {
@@ -203,9 +282,13 @@ export function SensorProvider({ children }: { children: ReactNode }) {
           const parsed = Number.parseInt(sensor.id.replace(/^s/, ""), 10);
           return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
         }, 0) + 1;
-      const attributePath = pickNextAttributePath(prev, telemetryPaths);
-      const deviceId = pickNextDeviceId(prev, availableDeviceIds);
+      const deviceId = pickNextDeviceId(prev, deviceChannelPaths);
       if (!deviceId) return prev;
+      const deviceSensors = prev.filter((sensor) => sensor.deviceId === deviceId);
+      const attributePath = pickNextAttributePath(
+        deviceSensors,
+        deviceChannelPaths[deviceId] ?? telemetryPaths,
+      );
       const newSensor: Sensor = {
         id: `s${nextIndex}`,
         deviceId,
@@ -223,7 +306,7 @@ export function SensorProvider({ children }: { children: ReactNode }) {
       setSelectedId(newSensor.id);
       return [...prev, newSensor];
     });
-  }, [availableDeviceIds, telemetryPaths]);
+  }, [deviceChannelPaths, telemetryPaths]);
 
   const updateSensorAttributePath = useCallback((id: string, attributePath: string) => {
     setSensors((prev) =>

@@ -1,7 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useSensors } from "@/components/providers/sensor-provider";
 import { STATUS_CFG } from "@/lib/sensors/sensor-types";
+
+const SENSORS_PER_PAGE = 4;
 
 export function SensorPanel() {
   const {
@@ -16,10 +19,21 @@ export function SensorPanel() {
     removeSensor,
     updateSensorPosition,
   } = useSensors();
+  const [page, setPage] = useState(0);
 
   const active = sensors.filter((s) => s.status === "active").length;
   const warning = sensors.filter((s) => s.status === "warning").length;
   const error = sensors.filter((s) => s.status === "error").length;
+  const totalPages = Math.max(1, Math.ceil(sensors.length / SENSORS_PER_PAGE));
+  const currentPage = Math.min(page, totalPages - 1);
+  const startIndex = currentPage * SENSORS_PER_PAGE;
+  const visibleSensors = sensors.slice(startIndex, startIndex + SENSORS_PER_PAGE);
+
+  useEffect(() => {
+    if (page !== currentPage) {
+      setPage(currentPage);
+    }
+  }, [currentPage, page]);
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -55,9 +69,60 @@ export function SensorPanel() {
         </div>
       )}
 
+      <div className="flex items-center gap-2 self-start rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-[0.68rem] text-slate-500 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setPage((current) => Math.max(current - 1, 0))}
+          disabled={currentPage === 0}
+          aria-label="Ver sensores anteriores"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5">
+            <path
+              d="M12.5 4.5 7 10l5.5 5.5"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+          </svg>
+        </button>
+
+        <div className="leading-tight">
+          <p className="font-medium text-slate-700">
+            {visibleSensors.length === 0
+              ? "Sin sensores"
+              : `Sensores ${startIndex + 1}-${startIndex + visibleSensors.length}`}
+          </p>
+          <p>
+            Página {currentPage + 1} de {totalPages}
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setPage((current) => Math.min(current + 1, totalPages - 1))}
+          disabled={currentPage >= totalPages - 1}
+          aria-label="Ver sensores siguientes"
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5">
+            <path
+              d="m7.5 4.5 5.5 5.5-5.5 5.5"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.8"
+            />
+          </svg>
+        </button>
+      </div>
+
       {/* Tarjetas de sensores */}
       <div className="flex flex-col gap-3">
-        {sensors.map((sensor) => {
+        {visibleSensors.map((sensor) => {
           const cfg = STATUS_CFG[sensor.status];
           const open = selectedId === sensor.id;
 
