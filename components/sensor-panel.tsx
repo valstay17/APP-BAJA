@@ -12,9 +12,12 @@ export function SensorPanel() {
     telemetryPaths,
     selectedId,
     isPlacingSensor,
+    isEditingSensors,
     select,
     startPlacingSensor,
     cancelPlacingSensor,
+    startEditingSensors,
+    stopEditingSensors,
     updateSensorAttributePath,
     removeSensor,
     updateSensorPosition,
@@ -49,6 +52,17 @@ export function SensorPanel() {
           <Pill color="emerald" count={active} label="activos" />
           {warning > 0 && <Pill color="amber" count={warning} label="alerta" />}
           {error > 0 && <Pill color="red" count={error} label="error" />}
+          <button
+            type="button"
+            onClick={isEditingSensors ? stopEditingSensors : startEditingSensors}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium uppercase tracking-[0.18em] transition-colors ${
+              isEditingSensors
+                ? "border-amber-300 bg-amber-50 text-amber-700"
+                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900"
+            }`}
+          >
+            {isEditingSensors ? "Bloquear posiciones" : "Editar posiciones"}
+          </button>
           <button
             type="button"
             onClick={isPlacingSensor ? cancelPlacingSensor : startPlacingSensor}
@@ -95,9 +109,7 @@ export function SensorPanel() {
               ? "Sin sensores"
               : `Sensores ${startIndex + 1}-${startIndex + visibleSensors.length}`}
           </p>
-          <p>
-            Página {currentPage + 1} de {totalPages}
-          </p>
+          <p>{isEditingSensors ? `Página ${currentPage + 1} de ${totalPages}` : "Posiciones bloqueadas"}</p>
         </div>
 
         <button
@@ -188,16 +200,19 @@ export function SensorPanel() {
                     <AxisInput
                       label="X"
                       value={sensor.position[0]}
+                      disabled={!isEditingSensors}
                       onChange={(nextValue) => updateSensorPosition(sensor.id, "x", nextValue)}
                     />
                     <AxisInput
                       label="Y"
                       value={sensor.position[1]}
+                      disabled={!isEditingSensors}
                       onChange={(nextValue) => updateSensorPosition(sensor.id, "y", nextValue)}
                     />
                     <AxisInput
                       label="Z"
                       value={sensor.position[2]}
+                      disabled={!isEditingSensors}
                       onChange={(nextValue) => updateSensorPosition(sensor.id, "z", nextValue)}
                     />
                   </div>
@@ -269,22 +284,29 @@ function Pill({
 function AxisInput({
   label,
   value,
+  disabled,
   onChange,
 }: {
   label: "X" | "Y" | "Z";
   value: number;
+  disabled?: boolean;
   onChange: (value: number) => void;
 }) {
   return (
-    <label className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-500">
+    <label
+      className={`rounded-xl border px-2.5 py-2 text-xs ${
+        disabled ? "border-slate-200 bg-slate-100 text-slate-400" : "border-slate-200 bg-slate-50 text-slate-500"
+      }`}
+    >
       <span className="font-semibold tracking-[0.18em] text-slate-400">{label}</span>
       <input
         type="number"
         step={0.001}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value || 0))}
         onClick={(event) => event.stopPropagation()}
-        className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold tabular-nums text-slate-700 outline-none"
+        className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold tabular-nums text-slate-700 outline-none disabled:cursor-not-allowed disabled:text-slate-400"
       />
     </label>
   );

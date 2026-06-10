@@ -4,6 +4,7 @@ import { ddbDocClient } from "@/lib/aws/dynamodb";
 
 const tableName = process.env.SENSORS_TABLE_NAME;
 const defaultDeviceId = process.env.DEFAULT_DEVICE_ID ?? "ESP32";
+const layoutDeviceId = "__sensor_layout__";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,6 +45,7 @@ export async function GET(request: Request) {
 
         for (const rawItem of response.Items ?? []) {
           const item = rawItem as Record<string, unknown>;
+          if (item.recordType === "layout" || item.deviceId === layoutDeviceId) continue;
           const currentDeviceId = item.deviceId;
           if (typeof currentDeviceId !== "string" || currentDeviceId.trim().length === 0) continue;
 

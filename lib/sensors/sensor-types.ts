@@ -15,6 +15,11 @@ export type Sensor = {
   position: [number, number, number];
 };
 
+export type SensorLayout = Pick<
+  Sensor,
+  "id" | "deviceId" | "attributePath" | "name" | "zone" | "unit" | "position"
+>;
+
 export const STATUS_CFG: Record<
   SensorStatus,
   { label: string; color: string; dot: string; border: string; bg: string; text: string }

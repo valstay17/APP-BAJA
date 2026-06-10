@@ -1,7 +1,7 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { type Sensor, INITIAL_SENSORS } from "@/lib/sensors/sensor-types";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { type Sensor, type SensorLayout, INITIAL_SENSORS } from "@/lib/sensors/sensor-types";
 
 type SensorTelemetry = {
   [key: string]: unknown;
@@ -16,6 +16,10 @@ type SensorTelemetry = {
 
 type LatestSensorsResponse = {
   items?: SensorTelemetry[];
+};
+
+type SensorLayoutResponse = {
+  sensors?: SensorLayout[];
 };
 
 const DEFAULT_DEVICE_ID = "ESP32";
@@ -101,6 +105,91 @@ function toDate(value: unknown): Date {
   return value > 1e12 ? new Date(value) : new Date(value * 1000);
 }
 
+function sensorToLayout(sensor: Sensor): SensorLayout {
+  return {
+    id: sensor.id,
+    deviceId: sensor.deviceId,
+    attributePath: sensor.attributePath,
+    name: sensor.name,
+    zone: sensor.zone,
+    unit: sensor.unit,
+    position: sensor.position,
+  };
+}
+
+function layoutToSensor(layout: SensorLayout): Sensor {
+  return {
+    ...layout,
+    value: 0,
+    baseValue: 0,
+    status: "idle",
+    updatedAt: new Date(),
+  };
+}
+
+function normalizeLayout(value: unknown): SensorLayout | null {
+  if (!value || typeof value !== "object") return null;
+
+  const sensor = value as Partial<SensorLayout>;
+
+  if (
+    typeof sensor.id !== "string" ||
+    typeof sensor.deviceId !== "string" ||
+    typeof sensor.attributePath !== "string" ||
+    typeof sensor.name !== "string" ||
+    typeof sensor.zone !== "string" ||
+    typeof sensor.unit !== "string" ||
+    !Array.isArray(sensor.position) ||
+    sensor.position.length !== 3
+  ) {
+    return null;
+  }
+
+  const position = sensor.position.map((coordinate) => Number(coordinate)) as [number, number, number];
+  if (position.some((coordinate) => !Number.isFinite(coordinate))) return null;
+
+  return {
+    id: sensor.id,
+    deviceId: sensor.deviceId,
+    attributePath: sensor.attributePath,
+    name: sensor.name,
+    zone: sensor.zone,
+    unit: sensor.unit,
+    position,
+  };
+}
+
+function normalizeLayoutList(value: unknown): SensorLayout[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeLayout).filter((sensor): sensor is SensorLayout => sensor !== null);
+}
+
+async function loadSensorLayout(): Promise<SensorLayout[] | null> {
+  try {
+    const response = await fetch("/api/sensors/config", { cache: "no-store" });
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as SensorLayoutResponse;
+    return normalizeLayoutList(payload.sensors);
+  } catch {
+    return null;
+  }
+}
+
+async function saveSensorLayout(layout: SensorLayout[]) {
+  try {
+    await fetch("/api/sensors/config", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sensors: layout }),
+    });
+  } catch {
+    // Ignore transient network issues; the next edit will retry.
+  }
+}
+
 function getTelemetryNumber(data: SensorTelemetry, attributePath: string): number {
   const source = data.payload && typeof data.payload === "object" ? data.payload : data;
   const value = resolvePath(source as Record<string, unknown>, attributePath);
@@ -149,9 +238,12 @@ type SensorCtx = {
   telemetryPaths: string[];
   selectedId: string | null;
   isPlacingSensor: boolean;
+  isEditingSensors: boolean;
   select: (id: string | null) => void;
   startPlacingSensor: () => void;
   cancelPlacingSensor: () => void;
+  startEditingSensors: () => void;
+  stopEditingSensors: () => void;
   addSensorAtPosition: (position: [number, number, number]) => void;
   updateSensorAttributePath: (id: string, attributePath: string) => void;
   removeSensor: (id: string) => void;
@@ -168,8 +260,42 @@ export function SensorProvider({ children }: { children: ReactNode }) {
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isPlacingSensor, setIsPlacingSensor] = useState(false);
+  const [isEditingSensors, setIsEditingSensors] = useState(false);
+  const [hasLoadedLayout, setHasLoadedLayout] = useState(false);
+  const lastPersistedLayoutRef = useRef("");
 
   useEffect(() => {
+    const bootstrap = async () => {
+      const layouts = await loadSensorLayout();
+      if (layouts !== null) {
+        const hydratedSensors = layouts.map(layoutToSensor);
+        setSensors(hydratedSensors);
+        lastPersistedLayoutRef.current = JSON.stringify(layouts);
+      } else {
+        lastPersistedLayoutRef.current = JSON.stringify([]);
+      }
+
+      setHasLoadedLayout(true);
+    };
+
+    void bootstrap();
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedLayout) return;
+
+    const layout = sensors.map(sensorToLayout);
+    const layoutJson = JSON.stringify(layout);
+
+    if (layoutJson === lastPersistedLayoutRef.current) return;
+
+    lastPersistedLayoutRef.current = layoutJson;
+    void saveSensorLayout(layout);
+  }, [hasLoadedLayout, sensors]);
+
+  useEffect(() => {
+    if (!hasLoadedLayout) return;
+
     const syncSensors = async () => {
       try {
         const res = await fetch("/api/sensors/latest?deviceId=all", {
@@ -260,7 +386,7 @@ export function SensorProvider({ children }: { children: ReactNode }) {
     syncSensors();
     const id = setInterval(syncSensors, 3000);
     return () => clearInterval(id);
-  }, []);
+  }, [hasLoadedLayout]);
 
   const select = useCallback((id: string | null) => {
     setSelectedId((prev) => (prev === id ? null : id));
@@ -273,6 +399,14 @@ export function SensorProvider({ children }: { children: ReactNode }) {
 
   const cancelPlacingSensor = useCallback(() => {
     setIsPlacingSensor(false);
+  }, []);
+
+  const startEditingSensors = useCallback(() => {
+    setIsEditingSensors(true);
+  }, []);
+
+  const stopEditingSensors = useCallback(() => {
+    setIsEditingSensors(false);
   }, []);
 
   const addSensorAtPosition = useCallback((position: [number, number, number]) => {
@@ -328,6 +462,8 @@ export function SensorProvider({ children }: { children: ReactNode }) {
 
   const updateSensorPosition = useCallback(
     (id: string, axis: "x" | "y" | "z", value: number) => {
+      if (!isEditingSensors) return;
+
       const axisIndex = axis === "x" ? 0 : axis === "y" ? 1 : 2;
 
       setSensors((prev) =>
@@ -348,7 +484,7 @@ export function SensorProvider({ children }: { children: ReactNode }) {
         }),
       );
     },
-    [],
+    [isEditingSensors],
   );
 
   return (
@@ -358,9 +494,12 @@ export function SensorProvider({ children }: { children: ReactNode }) {
         telemetryPaths,
         selectedId,
         isPlacingSensor,
+        isEditingSensors,
         select,
         startPlacingSensor,
         cancelPlacingSensor,
+        startEditingSensors,
+        stopEditingSensors,
         addSensorAtPosition,
         updateSensorAttributePath,
         removeSensor,
