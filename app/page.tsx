@@ -1,5 +1,6 @@
 import { GlbViewer } from "@/components/glb-viewer";
 import { SensorPanel } from "@/components/sensor-panel";
+import { SensorHistoryChart } from "@/components/sensor-history-chart";
 import { SensorProvider } from "@/components/providers/sensor-provider";
 
 export default function Home() {
@@ -26,6 +27,10 @@ export default function Home() {
             <GlbViewer />
           </section>
         </div>
+
+        <section className="rounded-[2rem] bg-[#f2efe8] p-7 shadow-[0_30px_120px_rgba(5,7,10,0.14)] lg:p-10">
+          <SensorHistoryChart />
+        </section>
       </section>
     </main>
     </SensorProvider>

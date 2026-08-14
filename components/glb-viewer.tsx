@@ -1,15 +1,29 @@
 "use client";
 
-import { Suspense } from "react";
-import { Bounds, Center, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Bounds, Environment, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 import type { ThreeEvent } from "@react-three/fiber";
+import { Box3, Vector3 } from "three";
 import { DRACOLoader } from "three-stdlib";
 import { useSensors } from "@/components/providers/sensor-provider";
 import { STATUS_CFG, type Sensor } from "@/lib/sensors/sensor-types";
 
-const MODEL_PATH = "/models/aat_c&e_framemodel3b1.glb";
+const MODEL_PATH = "/models/aat_c&e_framemodel3b.glb";
 const CAMERA_CONFIG = { position: [4, 2.2, 5] as [number, number, number], fov: 34 };
+const MM_PER_UNIT = 1000;
+
+function distanceFromPointsMm(a: [number, number, number], b: [number, number, number]) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const dz = b[2] - a[2];
+  const distance = Math.sqrt(dx ** 2 + dy ** 2 + dz ** 2);
+
+  return {
+    distanceMm: distance * MM_PER_UNIT,
+    deltaMm: [dx * MM_PER_UNIT, dy * MM_PER_UNIT, dz * MM_PER_UNIT] as [number, number, number],
+  };
+}
 
 function Model({
   onSurfacePointerDown,
@@ -27,11 +41,18 @@ function Model({
     },
   );
 
-  return (
-    <Center>
-      <primitive object={gltf.scene} onPointerDown={onSurfacePointerDown} />
-    </Center>
-  );
+  // Centra el chasis una sola vez, de forma determinista, usando la bounding
+  // box del modelo ya completamente cargado (gltf.scene). No usamos <Center>
+  // de drei porque recalcula el centrado en cada render y el resultado puede
+  // variar entre navegadores según el orden/timing en que termina de cargar
+  // la geometría (p. ej. velocidad de descarga del decoder DRACO).
+  useMemo(() => {
+    const box = new Box3().setFromObject(gltf.scene);
+    const center = box.getCenter(new Vector3());
+    gltf.scene.position.set(-center.x, -center.y, -center.z);
+  }, [gltf.scene]);
+
+  return <primitive object={gltf.scene} onPointerDown={onSurfacePointerDown} />;
 }
 
 useGLTF.preload(MODEL_PATH);
@@ -128,6 +149,16 @@ function SensorHotspot({
 
 export function GlbViewer() {
   const { sensors, selectedId, isPlacingSensor, select, addSensorAtPosition } = useSensors();
+  const [lastPlacedPoint, setLastPlacedPoint] = useState<[number, number, number] | null>(null);
+  const [lastDistanceMm, setLastDistanceMm] = useState<number | null>(null);
+  const [lastDeltaMm, setLastDeltaMm] = useState<[number, number, number] | null>(null);
+  const hasPlacedInCurrentSessionRef = useRef(false);
+
+  useEffect(() => {
+    if (!isPlacingSensor) {
+      hasPlacedInCurrentSessionRef.current = false;
+    }
+  }, [isPlacingSensor]);
 
   const placeSensorFromEvent = (event: ThreeEvent<PointerEvent>) => {
     if (!isPlacingSensor) return;
@@ -142,7 +173,26 @@ export function GlbViewer() {
     if (!hit) return;
 
     event.stopPropagation();
-    addSensorAtPosition([hit.point.x, hit.point.y, hit.point.z]);
+    const nextPoint: [number, number, number] = [hit.point.x, hit.point.y, hit.point.z];
+
+    if (!hasPlacedInCurrentSessionRef.current) {
+      setLastPlacedPoint(null);
+      setLastDistanceMm(null);
+      setLastDeltaMm(null);
+      hasPlacedInCurrentSessionRef.current = true;
+    }
+
+    if (lastPlacedPoint) {
+      const measurement = distanceFromPointsMm(lastPlacedPoint, nextPoint);
+      setLastDistanceMm(measurement.distanceMm);
+      setLastDeltaMm(measurement.deltaMm);
+    } else {
+      setLastDistanceMm(null);
+      setLastDeltaMm(null);
+    }
+
+    setLastPlacedPoint(nextPoint);
+    addSensorAtPosition(nextPoint);
   };
 
   const handleSurfacePointerDown = (event: ThreeEvent<PointerEvent>) => {
@@ -186,8 +236,12 @@ export function GlbViewer() {
           enablePan
           enableDamping
           dampingFactor={0.08}
-          minDistance={1.25}
-          maxDistance={18}
+          screenSpacePanning
+          minDistance={0.45}
+          maxDistance={48}
+          zoomSpeed={1.25}
+          panSpeed={1.15}
+          rotateSpeed={0.9}
           minPolarAngle={0}
           maxPolarAngle={Math.PI}
           autoRotate={false}
@@ -195,7 +249,12 @@ export function GlbViewer() {
       </Canvas>
       {isPlacingSensor && (
         <div className="pointer-events-none absolute inset-x-5 bottom-24 rounded-3xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100 backdrop-blur-md">
-          Toca una parte del chasis para crear un nuevo sensor en ese punto.
+          <p>Toca una parte del chasis para crear un nuevo sensor en ese punto.</p>
+          {lastDistanceMm !== null && lastDeltaMm && (
+            <p className="mt-1 text-cyan-50/90">
+              Distancia desde el punto anterior: {lastDistanceMm.toFixed(2)} mm · ΔX {lastDeltaMm[0].toFixed(2)} · ΔY {lastDeltaMm[1].toFixed(2)} · ΔZ {lastDeltaMm[2].toFixed(2)}
+            </p>
+          )}
         </div>
       )}
       <div className="pointer-events-none absolute inset-x-5 bottom-5 rounded-3xl border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/80 backdrop-blur-md">

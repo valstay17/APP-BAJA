@@ -17,7 +17,7 @@ const char* TOPIC_PUB = "sensores/baja/ESP32/telemetry";
 const char* TOPIC_SUB = "sensores/baja/ESP32/cmd";
 
 const int HX711_COUNT = 4;
-const int HX711_DOUT_PINS[HX711_COUNT] = {34, 35, 32, 33};
+const int HX711_DOUT_PINS[HX711_COUNT] = {26, 27, 32, 33};
 const int HX711_SCK_PIN = 25;
 
 // Ajusta cada factor con calibracion real. Si los 4 puentes son iguales, puedes empezar con el mismo valor.
@@ -56,6 +56,7 @@ bool timeSynced = false;
 bool tlsReady = false;
 
 long zeroOffsets[HX711_COUNT] = {0, 0, 0, 0};
+bool channelReady[HX711_COUNT] = {false, false, false, false};
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Topic recibido: ");
@@ -177,12 +178,39 @@ bool testTLS() {
   return true;
 }
 
+bool waitDoutReady(int doutPin, unsigned long timeoutMs) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    if (digitalRead(doutPin) == LOW) return true;
+    delay(10);
+  }
+  return false;
+}
+
 void initScales() {
+  pinMode(HX711_SCK_PIN, OUTPUT);
+  digitalWrite(HX711_SCK_PIN, LOW);
+
   for (int i = 0; i < HX711_COUNT; i++) {
+    Serial.print("Iniciando HX711 ");
+    Serial.println(i + 1);
+
+    pinMode(HX711_DOUT_PINS[i], INPUT_PULLUP);
+
+    // Revisa el pin DOUT crudo, sin usar begin()/set_gain(), que internamente
+    // llaman a read() y se bloquean para siempre si el chip no responde.
+    if (!waitDoutReady(HX711_DOUT_PINS[i], 2000)) {
+      Serial.print("HX711 ");
+      Serial.print(i + 1);
+      Serial.println(" no responde (revisa cableado/alimentacion). Se omite este canal.");
+      continue;
+    }
+
     scales[i].begin(HX711_DOUT_PINS[i], HX711_SCK_PIN);
     scales[i].set_scale(CALIBRATION_FACTORS[i]);
     scales[i].tare(20);
     zeroOffsets[i] = scales[i].read_average(10);
+    channelReady[i] = true;
 
     Serial.print("HX711 ");
     Serial.print(i + 1);
@@ -192,10 +220,12 @@ void initScales() {
 }
 
 float readDeformationUnits(int index) {
+  if (!channelReady[index]) return 0.0f;
   return scales[index].get_units(10);
 }
 
 long readRawDelta(int index) {
+  if (!channelReady[index]) return 0;
   return scales[index].read_average(5) - zeroOffsets[index];
 }
 
@@ -342,6 +372,10 @@ void publishTelemetry() {
   Serial.println(payload);
 
   if (!mqtt.publish(TOPIC_PUB, payload.c_str())) {
+    Serial.print("mqtt.publish fallo. state=");
+    Serial.print(mqtt.state());
+    Serial.print(" connected=");
+    Serial.println(mqtt.connected());
     appendOfflineRecord(payload);
   }
 }
@@ -349,6 +383,7 @@ void publishTelemetry() {
 void setup() {
   Serial.begin(115200);
   delay(800);
+  Serial.println("BOOT OK");
 
   if (!ensureStorage()) {
     Serial.println("Aviso: sin LittleFS no habra cola local");
@@ -360,6 +395,7 @@ void setup() {
   mqtt.setCallback(mqttCallback);
   mqtt.setSocketTimeout(4);
   mqtt.setKeepAlive(30);
+  mqtt.setBufferSize(512);
 
   connectWiFi();
 

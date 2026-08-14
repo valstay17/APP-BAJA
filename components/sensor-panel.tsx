@@ -2,7 +2,30 @@
 
 import { useEffect, useState } from "react";
 import { useSensors } from "@/components/providers/sensor-provider";
-import { STATUS_CFG } from "@/lib/sensors/sensor-types";
+import { saeToWorld, worldToSae } from "@/lib/sensors/coordinate-system";
+import { STATUS_CFG, type Sensor } from "@/lib/sensors/sensor-types";
+
+function buildInitialSensorsCode(sensors: Sensor[]): string {
+  const items = sensors
+    .map((s) => {
+      const [x, y, z] = s.position;
+      return `  {
+    id: "${s.id}",
+    deviceId: "${s.deviceId}",
+    attributePath: "${s.attributePath}",
+    name: "${s.name}",
+    zone: "${s.zone}",
+    unit: "${s.unit}",
+    value: 0,
+    baseValue: 0,
+    status: "idle",
+    updatedAt: new Date(),
+    position: [${x}, ${y}, ${z}],
+  }`;
+    })
+    .join(",\n");
+  return `export const INITIAL_SENSORS: Sensor[] = [\n${items}\n];`;
+}
 
 const SENSORS_PER_PAGE = 4;
 
@@ -10,16 +33,38 @@ export function SensorPanel() {
   const {
     sensors,
     telemetryPaths,
+    deviceIds,
     selectedId,
     isPlacingSensor,
     select,
     startPlacingSensor,
     cancelPlacingSensor,
     updateSensorAttributePath,
+    updateSensorDeviceId,
     removeSensor,
-    updateSensorPosition,
+    setSensorPosition,
   } = useSensors();
   const [page, setPage] = useState(0);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyPositions = async () => {
+    const code = buildInitialSensorsCode(sensors);
+    if (navigator?.clipboard) {
+      await navigator.clipboard.writeText(code);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = code;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const active = sensors.filter((s) => s.status === "active").length;
   const warning = sensors.filter((s) => s.status === "warning").length;
@@ -49,6 +94,14 @@ export function SensorPanel() {
           <Pill color="emerald" count={active} label="activos" />
           {warning > 0 && <Pill color="amber" count={warning} label="alerta" />}
           {error > 0 && <Pill color="red" count={error} label="error" />}
+          <button
+            type="button"
+            onClick={handleCopyPositions}
+            disabled={sensors.length === 0}
+            className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium uppercase tracking-[0.18em] text-slate-600 transition-colors hover:border-slate-300 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {copied ? "Copiado" : "Copiar posiciones"}
+          </button>
           <button
             type="button"
             onClick={isPlacingSensor ? cancelPlacingSensor : startPlacingSensor}
@@ -125,6 +178,14 @@ export function SensorPanel() {
         {visibleSensors.map((sensor) => {
           const cfg = STATUS_CFG[sensor.status];
           const open = selectedId === sensor.id;
+          const saePosition = worldToSae(sensor.position);
+
+          const updateSaeAxis = (axis: "x" | "y" | "z", nextValue: number) => {
+            const nextSae: [number, number, number] = [...saePosition] as [number, number, number];
+            const axisIndex = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+            nextSae[axisIndex] = nextValue;
+            setSensorPosition(sensor.id, saeToWorld(nextSae));
+          };
 
           return (
             <div
@@ -186,19 +247,27 @@ export function SensorPanel() {
 
                   <div className="mt-3 grid grid-cols-3 gap-2">
                     <AxisInput
-                      label="X"
-                      value={sensor.position[0]}
-                      onChange={(nextValue) => updateSensorPosition(sensor.id, "x", nextValue)}
+                      label="X (SAE)"
+                      value={saePosition[0]}
+                      onChange={(nextValue) => updateSaeAxis("x", nextValue)}
                     />
                     <AxisInput
-                      label="Y"
-                      value={sensor.position[1]}
-                      onChange={(nextValue) => updateSensorPosition(sensor.id, "y", nextValue)}
+                      label="Y (SAE)"
+                      value={saePosition[1]}
+                      onChange={(nextValue) => updateSaeAxis("y", nextValue)}
                     />
                     <AxisInput
-                      label="Z"
-                      value={sensor.position[2]}
-                      onChange={(nextValue) => updateSensorPosition(sensor.id, "z", nextValue)}
+                      label="Z (SAE)"
+                      value={saePosition[2]}
+                      onChange={(nextValue) => updateSaeAxis("z", nextValue)}
+                    />
+                  </div>
+
+                  <div className="mt-3">
+                    <DeviceSelect
+                      value={sensor.deviceId}
+                      options={deviceIds}
+                      onChange={(nextValue) => updateSensorDeviceId(sensor.id, nextValue)}
                     />
                   </div>
 
@@ -271,21 +340,58 @@ function AxisInput({
   value,
   onChange,
 }: {
-  label: "X" | "Y" | "Z";
+  label: "X (SAE)" | "Y (SAE)" | "Z (SAE)";
   value: number;
   onChange: (value: number) => void;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+
   return (
     <label className="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-500">
       <span className="font-semibold tracking-[0.18em] text-slate-400">{label}</span>
       <input
         type="number"
-        step={0.001}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value || 0))}
+        step={0.00000001}
+        value={draft ?? value}
+        onChange={(event) => {
+          const raw = event.target.value;
+          setDraft(raw);
+          const parsed = parseFloat(raw);
+          if (!Number.isNaN(parsed)) onChange(parsed);
+        }}
+        onBlur={() => setDraft(null)}
         onClick={(event) => event.stopPropagation()}
         className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold tabular-nums text-slate-700 outline-none"
       />
+    </label>
+  );
+}
+
+function DeviceSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+      <span className="font-semibold tracking-[0.18em] text-slate-400">DISPOSITIVO / REGISTRO</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        className="mt-1 w-full border-none bg-transparent p-0 text-sm font-semibold text-slate-700 outline-none"
+      >
+        <option value="">Sin asignar</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }

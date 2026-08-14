@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { type Sensor, INITIAL_SENSORS } from "@/lib/sensors/sensor-types";
 
 type SensorTelemetry = {
@@ -101,11 +101,13 @@ function toDate(value: unknown): Date {
   return value > 1e12 ? new Date(value) : new Date(value * 1000);
 }
 
-function getTelemetryNumber(data: SensorTelemetry, attributePath: string): number {
+function getTelemetryNumber(data: SensorTelemetry, attributePath: string): number | null {
+  if (attributePath.trim().length === 0) return null;
+
   const source = data.payload && typeof data.payload === "object" ? data.payload : data;
   const value = resolvePath(source as Record<string, unknown>, attributePath);
   if (value !== undefined) return toNumber(value);
-  return toNumber(data.sensorValue);
+  return null;
 }
 
 function getSensorStatus(value: number, hasTelemetry: boolean): Sensor["status"] {
@@ -144,17 +146,98 @@ function pickNextDeviceId(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Historial de lecturas (para graficar y exportar a PDF).
+// Se persiste en localStorage para no perder datos si se cae la conexión:
+// las lecturas siguen acumulándose desde el último estado guardado en cuanto
+// vuelve a responder /api/sensors/latest, igual que el buffer offline del ESP32.
+// ---------------------------------------------------------------------------
+
+const SENSOR_HISTORY_KEY = "baja:sensor-history";
+const MAX_HISTORY_POINTS = 200;
+
+export type SensorReading = { timestamp: number; value: number };
+export type SensorHistory = Record<string, SensorReading[]>;
+
+function loadSensorHistory(): SensorHistory {
+  try {
+    const raw = localStorage.getItem(SENSOR_HISTORY_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as SensorHistory;
+  } catch {
+    return {};
+  }
+}
+
+function saveSensorHistory(history: SensorHistory): void {
+  try {
+    localStorage.setItem(SENSOR_HISTORY_KEY, JSON.stringify(history));
+  } catch {
+    // Ignore storage errors (private mode, quota exceeded, etc.)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// localStorage persistence for sensor configuration (not telemetry values)
+// ---------------------------------------------------------------------------
+
+const SENSOR_CONFIG_KEY = "baja:sensor-configs";
+
+type PersistedSensorConfig = Pick<
+  Sensor,
+  "id" | "deviceId" | "attributePath" | "name" | "zone" | "unit" | "position"
+>;
+
+function loadSensorConfigs(): PersistedSensorConfig[] | null {
+  try {
+    const raw = localStorage.getItem(SENSOR_CONFIG_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed as PersistedSensorConfig[];
+  } catch {
+    return null;
+  }
+}
+
+function saveSensorConfigs(sensors: Sensor[]): void {
+  try {
+    const configs: PersistedSensorConfig[] = sensors.map(
+      ({ id, deviceId, attributePath, name, zone, unit, position }) => ({
+        id,
+        deviceId,
+        attributePath,
+        name,
+        zone,
+        unit,
+        position,
+      }),
+    );
+    localStorage.setItem(SENSOR_CONFIG_KEY, JSON.stringify(configs));
+  } catch {
+    // Ignore storage errors (private mode, quota exceeded, etc.)
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 type SensorCtx = {
   sensors: Sensor[];
   telemetryPaths: string[];
+  deviceIds: string[];
   selectedId: string | null;
   isPlacingSensor: boolean;
+  history: SensorHistory;
   select: (id: string | null) => void;
   startPlacingSensor: () => void;
   cancelPlacingSensor: () => void;
   addSensorAtPosition: (position: [number, number, number]) => void;
   updateSensorAttributePath: (id: string, attributePath: string) => void;
+  updateSensorDeviceId: (id: string, deviceId: string) => void;
   removeSensor: (id: string) => void;
+  setSensorPosition: (id: string, position: [number, number, number]) => void;
   updateSensorPosition: (id: string, axis: "x" | "y" | "z", value: number) => void;
 };
 
@@ -168,6 +251,92 @@ export function SensorProvider({ children }: { children: ReactNode }) {
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isPlacingSensor, setIsPlacingSensor] = useState(false);
+  const [history, setHistory] = useState<SensorHistory>({});
+
+  // Track whether we have already loaded persisted configs so we don't
+  // accidentally overwrite them with the initial empty state on the first save.
+  const configLoadedRef = useRef(false);
+  const sensorsRef = useRef<Sensor[]>(sensors);
+  useEffect(() => { sensorsRef.current = sensors; }, [sensors]);
+
+  // Carga el historial desde DynamoDB; si falla (sin red) usa el caché local.
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const res = await fetch("/api/sensors/history?deviceId=all", { cache: "no-store" });
+        if (!res.ok) throw new Error("api error");
+
+        const data = (await res.json()) as { items?: Record<string, unknown>[] };
+        const items = data.items ?? [];
+
+        // Agrupa lecturas por sensorId basándose en deviceId + attributePath de los sensores configurados.
+        const fromApi: SensorHistory = {};
+        const currentSensors = sensorsRef.current;
+
+        for (const item of items) {
+          const deviceId = typeof item.deviceId === "string" ? item.deviceId : null;
+          const ts = typeof item.timestamp === "number" ? item.timestamp : null;
+          if (!deviceId || ts === null) continue;
+
+          for (const sensor of currentSensors) {
+            if (sensor.deviceId !== deviceId) continue;
+            const path = sensor.attributePath.trim().length > 0 ? sensor.attributePath : "sensorValue";
+            const raw = path.split(".").reduce<unknown>((cur, seg) => {
+              if (!cur || typeof cur !== "object") return undefined;
+              return (cur as Record<string, unknown>)[seg];
+            }, item);
+            const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null;
+            if (value === null || !Number.isFinite(value)) continue;
+
+            const existing = fromApi[sensor.id] ?? [];
+            fromApi[sensor.id] = [...existing, { timestamp: ts > 1e12 ? ts : ts * 1000, value }]
+              .slice(-MAX_HISTORY_POINTS);
+          }
+        }
+
+        if (Object.keys(fromApi).length > 0) {
+          setHistory(fromApi);
+          saveSensorHistory(fromApi);
+        } else {
+          setHistory(loadSensorHistory());
+        }
+      } catch {
+        setHistory(loadSensorHistory());
+      }
+    };
+
+    loadHistory();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persiste el historial cada vez que cambia.
+  useEffect(() => {
+    if (Object.keys(history).length === 0) return;
+    saveSensorHistory(history);
+  }, [history]);
+
+  // Load persisted sensor configs from localStorage after mount (client only).
+  useEffect(() => {
+    const stored = loadSensorConfigs();
+    if (stored && stored.length > 0) {
+      setSensors(
+        stored.map((cfg) => ({
+          ...cfg,
+          value: 0,
+          baseValue: 0,
+          status: "idle" as const,
+          updatedAt: new Date(),
+        })),
+      );
+    }
+    configLoadedRef.current = true;
+  }, []);
+
+  // Persist sensor configs whenever they change (skip before initial load).
+  useEffect(() => {
+    if (!configLoadedRef.current) return;
+    saveSensorConfigs(sensors);
+  }, [sensors]);
 
   useEffect(() => {
     const syncSensors = async () => {
@@ -229,28 +398,38 @@ export function SensorProvider({ children }: { children: ReactNode }) {
             : { [DEFAULT_DEVICE_ID]: ["channels.0.deformation"] },
         );
 
-        setSensors((prev) => {
-          return prev.map((sensor) => {
+        const nowTs = Date.now();
+        const currentSensors = sensorsRef.current;
+
+        setSensors(
+          currentSensors.map((sensor) => {
             const telemetry = latestByDeviceId.get(sensor.deviceId);
-            if (!telemetry) {
-              return {
-                ...sensor,
-                status: "idle",
-              };
-            }
+            if (!telemetry) return { ...sensor, status: "idle" };
 
             const rawTimestamp = telemetry.timestamp ?? telemetry.msgTimestamp ?? telemetry.updatedAt;
             const updatedAt = toDate(rawTimestamp);
-            const value = getTelemetryNumber(telemetry, sensor.attributePath);
+            const path = sensor.attributePath.trim().length > 0 ? sensor.attributePath : "sensorValue";
+            const value = getTelemetryNumber(telemetry, path);
 
-            return {
-              ...sensor,
-              value,
-              baseValue: value,
-              updatedAt,
-              status: getSensorStatus(value, true),
-            };
-          });
+            if (value === null) return { ...sensor, value: 0, baseValue: 0, status: "idle" };
+
+            return { ...sensor, value, baseValue: value, updatedAt, status: getSensorStatus(value, true) };
+          }),
+        );
+
+        setHistory((prevHistory) => {
+          const next: SensorHistory = { ...prevHistory };
+          for (const sensor of currentSensors) {
+            const telemetry = latestByDeviceId.get(sensor.deviceId);
+            if (!telemetry) continue;
+            const path = sensor.attributePath.trim().length > 0 ? sensor.attributePath : "sensorValue";
+            const value = getTelemetryNumber(telemetry, path);
+            if (value === null) continue;
+
+            const existing = next[sensor.id] ?? [];
+            next[sensor.id] = [...existing, { timestamp: nowTs, value }].slice(-MAX_HISTORY_POINTS);
+          }
+          return next;
         });
       } catch {
         // Ignore transient network errors; next poll will retry.
@@ -321,9 +500,40 @@ export function SensorProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  const updateSensorDeviceId = useCallback((id: string, deviceId: string) => {
+    setSensors((prev) =>
+      prev.map((sensor) =>
+        sensor.id === id
+          ? {
+              ...sensor,
+              deviceId,
+              status: "idle",
+            }
+          : sensor,
+      ),
+    );
+  }, []);
+
   const removeSensor = useCallback((id: string) => {
     setSensors((prev) => prev.filter((sensor) => sensor.id !== id));
     setSelectedId((prev) => (prev === id ? null : prev));
+  }, []);
+
+  const setSensorPosition = useCallback((id: string, position: [number, number, number]) => {
+    setSensors((prev) =>
+      prev.map((sensor) => {
+        if (sensor.id !== id) return sensor;
+
+        return {
+          ...sensor,
+          position: [
+            parseFloat(position[0].toFixed(8)),
+            parseFloat(position[1].toFixed(8)),
+            parseFloat(position[2].toFixed(8)),
+          ],
+        };
+      }),
+    );
   }, []);
 
   const updateSensorPosition = useCallback(
@@ -339,7 +549,7 @@ export function SensorProvider({ children }: { children: ReactNode }) {
             number,
             number,
           ];
-          nextPosition[axisIndex] = parseFloat(value.toFixed(4));
+          nextPosition[axisIndex] = parseFloat(value.toFixed(8));
 
           return {
             ...sensor,
@@ -356,14 +566,18 @@ export function SensorProvider({ children }: { children: ReactNode }) {
       value={{
         sensors,
         telemetryPaths,
+        deviceIds: Object.keys(deviceChannelPaths).sort((left, right) => left.localeCompare(right)),
         selectedId,
         isPlacingSensor,
+        history,
         select,
         startPlacingSensor,
         cancelPlacingSensor,
         addSensorAtPosition,
         updateSensorAttributePath,
+        updateSensorDeviceId,
         removeSensor,
+        setSensorPosition,
         updateSensorPosition,
       }}
     >

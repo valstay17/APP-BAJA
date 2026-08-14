@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.venv
+build
+firmware
+*.md
+.env*
+!.env.example
+*.tsbuildinfo
+npm-debug.log*
+.DS_Store
+Dockerfile
+.dockerignore
